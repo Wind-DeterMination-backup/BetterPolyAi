@@ -1,0 +1,11 @@
+{
+  "name": "betterpolyai",
+  "displayName": "BetterPolyAi",
+  "author": "DeterMination",
+  "version": "v0.1.0",
+  "minGameVersion": 154,
+  "description": "Standalone Poly build-assist extracted from MindustryX. It only executes your own build plans and can be toggled with a keybind. / 从 MindustryX 提取的 Poly 建造辅助，仅响应你自己的建造规划，并支持快捷键开关。",
+  "main": "betterpolyai.BetterPolyAiMod",
+  "hidden": true,
+  "java": true
+}

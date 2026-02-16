@@ -1,0 +1,224 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: |
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Resolve D8 path
+        shell: bash
+        run: |
+          D8_PATH="$(find "$ANDROID_HOME/build-tools" -type f -name d8 | sort -r | head -n 1)"
+          echo "D8_PATH=$D8_PATH" >> "$GITHUB_ENV"
+
+      - name: Calculate semantic version
+        id: semver
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          try:
+              previous = git("describe", "--tags", "--abbrev=0", "--match", "v*")
+          except subprocess.CalledProcessError:
+              previous = ""
+
+          log_range = f"{previous}..HEAD" if previous else "HEAD"
+          raw = subprocess.check_output([
+              "git", "log", log_range, "--reverse", "--pretty=format:%H%x1f%s%x1f%b%x1e"
+          ], text=True)
+
+          entries = [e for e in raw.split("\x1e") if e.strip()]
+          release_entries = []
+          level = 0
+
+          patch_types = "fix|perf|refactor|docs|style|test|build|ci|chore|revert"
+          major_re = re.compile(r"^[A-Za-z]+(?:\([^)]+\))?!:")
+          minor_re = re.compile(r"^feat(?:\([^)]+\))?:", re.IGNORECASE)
+          patch_re = re.compile(rf"^(?:{patch_types})(?:\([^)]+\))?:", re.IGNORECASE)
+
+          for entry in entries:
+              sha, subject, body = (entry.split("\x1f", 2) + ["", "", ""])[:3]
+              subject = subject.strip()
+              body_lower = body.lower()
+
+              bump = 0
+              if major_re.match(subject) or "breaking change" in body_lower:
+                  bump = 3
+              elif minor_re.match(subject):
+                  bump = 2
+              elif patch_re.match(subject):
+                  bump = 1
+
+              if bump > 0:
+                  level = max(level, bump)
+                  release_entries.append((sha[:7], subject))
+
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as out:
+              if level == 0:
+                  out.write("release=false\n")
+                  sys.exit(0)
+
+              base = previous[1:] if previous.startswith("v") else previous
+              if not base:
+                  base = "0.0.0"
+
+              nums = [int(x) for x in re.findall(r"\d+", base)[:3]]
+              while len(nums) < 3:
+                  nums.append(0)
+              major, minor, patch = nums
+
+              if level == 3:
+                  major += 1
+                  minor = 0
+                  patch = 0
+              elif level == 2:
+                  minor += 1
+                  patch = 0
+              else:
+                  patch += 1
+
+              version = f"v{major}.{minor}.{patch}"
+
+              lines = [f"## {version}", "", "### Commits"]
+              for short_sha, subject in release_entries:
+                  lines.append(f"- `{short_sha}` {subject}")
+              notes = "\n".join(lines).rstrip() + "\n"
+              Path("release-notes.md").write_text(notes, encoding="utf-8")
+
+              out.write("release=true\n")
+              out.write(f"version={version}\n")
+              out.write(f"previous={previous}\n")
+          PY
+
+      - name: Stop when no release-worthy commits
+        if: steps.semver.outputs.release != 'true'
+        run: echo "No feat/fix/... commit detected, skip release."
+
+      - name: Update version and changelog
+        if: steps.semver.outputs.release == 'true'
+        env:
+          NEW_VERSION: ${{ steps.semver.outputs.version }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["NEW_VERSION"].strip()
+
+          gradle = Path("build.gradle")
+          text = gradle.read_text(encoding="utf-8")
+          text, count = re.subn(
+              r'(?m)^version\s*=\s*"v?[0-9]+\.[0-9]+\.[0-9]+"',
+              f'version = "{version}"',
+              text,
+              count=1
+          )
+          if count != 1:
+              raise RuntimeError("Failed to update version in build.gradle")
+          gradle.write_text(text, encoding="utf-8")
+
+          mod_json = Path("src/main/resources/mod.json")
+          meta = json.loads(mod_json.read_text(encoding="utf-8"))
+          meta["version"] = version
+          mod_json.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+          notes = Path("release-notes.md").read_text(encoding="utf-8").strip().splitlines()
+          body_lines = [line for line in notes[2:] if line.strip()]
+          if not body_lines:
+              body_lines = [f"- Release {version}"]
+
+          changelog = Path("CHANGELOG.md")
+          existing = changelog.read_text(encoding="utf-8")
+          header = f"## {version}"
+          if header not in existing:
+              entry = header + "\n" + "\n".join(body_lines) + "\n\n"
+              marker = "# Changelog\n\n"
+              if existing.startswith(marker):
+                  updated = marker + entry + existing[len(marker):]
+              else:
+                  updated = "# Changelog\n\n" + entry + existing
+              changelog.write_text(updated, encoding="utf-8")
+          PY
+
+      - name: Commit release metadata
+        if: steps.semver.outputs.release == 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add build.gradle src/main/resources/mod.json CHANGELOG.md
+          git commit -m "chore(release): ${{ steps.semver.outputs.version }} [skip release]" || echo "No metadata changes"
+          git push
+
+      - name: Build release artifacts
+        if: steps.semver.outputs.release == 'true'
+        run: gradle deploy --no-daemon
+
+      - name: Create and push tag
+        if: steps.semver.outputs.release == 'true'
+        shell: bash
+        run: |
+          git tag "${{ steps.semver.outputs.version }}"
+          git push origin "${{ steps.semver.outputs.version }}"
+
+      - name: Rename artifacts with version
+        if: steps.semver.outputs.release == 'true'
+        shell: bash
+        run: |
+          version="${{ steps.semver.outputs.version }}"
+          mkdir -p dist
+          cp build/libs/betterPolyAi.zip "dist/betterPolyAi-${version}.zip"
+          cp build/libs/betterPolyAi.jar "dist/betterPolyAi-${version}.jar"
+          cp build/libs/betterPolyAi-android.jar "dist/betterPolyAi-${version}-android.jar"
+
+      - name: Create GitHub Release
+        if: steps.semver.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.semver.outputs.version }}
+          body_path: release-notes.md
+          files: |
+            dist/*.zip
+            dist/*.jar
