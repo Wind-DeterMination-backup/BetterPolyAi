@@ -18,6 +18,10 @@ import static mindustry.Vars.world;
 public class PolyAiFeature {
 
     private static final String keyEnabled = "bpa-enabled";
+    private static final String keyBuildGapTiles = "bpa-build-gap-tiles";
+    private static final int defaultBuildGapTiles = 0;
+    private static final int minBuildGapTiles = 0;
+    private static final int maxBuildGapTiles = 30;
 
     private static final Interval interval = new Interval(1);
     private static final int idSettings = 0;
@@ -47,6 +51,7 @@ public class PolyAiFeature {
 
     public static void buildSettings(SettingsMenuDialog.SettingsTable table) {
         table.checkPref(keyEnabled, false);
+        table.textPref(keyBuildGapTiles, String.valueOf(defaultBuildGapTiles));
         table.checkPref(GithubUpdateCheck.enabledKey(), true);
         table.checkPref(GithubUpdateCheck.showDialogKey(), true);
         refreshSettings();
@@ -54,6 +59,7 @@ public class PolyAiFeature {
 
     private static void applyDefaults() {
         Core.settings.defaults(keyEnabled, false);
+        Core.settings.defaults(keyBuildGapTiles, String.valueOf(defaultBuildGapTiles));
     }
 
     private static void registerKeybinds() {
@@ -64,6 +70,23 @@ public class PolyAiFeature {
 
     private static void refreshSettings() {
         enabled = Core.settings.getBool(keyEnabled, false);
+        int gapTiles = parseGapTiles(Core.settings.getString(keyBuildGapTiles, String.valueOf(defaultBuildGapTiles)));
+        PlayerPlanBuilderAI.setBuildGapTiles(gapTiles);
+    }
+
+    private static int parseGapTiles(String rawValue) {
+        int parsed = defaultBuildGapTiles;
+        if (rawValue != null) {
+            try {
+                parsed = Integer.parseInt(rawValue.trim());
+            } catch (NumberFormatException ignored) {
+                parsed = defaultBuildGapTiles;
+            }
+        }
+
+        if (parsed < minBuildGapTiles) return minBuildGapTiles;
+        if (parsed > maxBuildGapTiles) return maxBuildGapTiles;
+        return parsed;
     }
 
     private static void setEnabled(boolean value) {

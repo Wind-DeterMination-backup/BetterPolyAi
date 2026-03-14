@@ -1,5 +1,6 @@
 package betterpolyai.features;
 
+import arc.math.Mathf;
 import mindustry.ai.types.CommandAI;
 import mindustry.ai.types.FlyingAI;
 import mindustry.ai.types.GroundAI;
@@ -17,6 +18,14 @@ import static mindustry.Vars.state;
 public class PlayerPlanBuilderAI extends AIController {
 
     public static float buildRadius = 1500f;
+    private static final int tileSize = 8;
+    private static final int minGapTiles = 0;
+    private static final int maxGapTiles = 30;
+    private static int buildGapTiles = 0;
+
+    public static void setBuildGapTiles(int value) {
+        buildGapTiles = Mathf.clamp(value, minGapTiles, maxGapTiles);
+    }
 
     @Override
     public void updateMovement() {
@@ -44,11 +53,17 @@ public class PlayerPlanBuilderAI extends AIController {
                 : Build.validPlace(req.block, unit.team(), req.x, req.y, req.rotation);
 
             if (validConstruct || validAction) {
-                float range = Math.min(unit.type.buildRange - unit.type.hitSize * 2f, buildRadius);
+                float maxBuildRange = Math.min(unit.type.buildRange - unit.type.hitSize * 2f, buildRadius);
                 Tile moveTile = reqTile != null ? reqTile : world.tile(req.x, req.y);
                 if (moveTile != null) {
-                    moveTo(moveTile, range, 20f);
-                    moving = !unit.within(moveTile, range);
+                    float desiredRange = Mathf.clamp(buildGapTiles * (float) tileSize, 0f, maxBuildRange);
+                    float distance = unit.dst(moveTile.worldx(), moveTile.worldy());
+                    boolean insideBuildRange = distance <= maxBuildRange;
+                    boolean directBuildAtDefaultGap = buildGapTiles == 0 && insideBuildRange;
+                    if (!directBuildAtDefaultGap && distance > desiredRange) {
+                        moveTo(moveTile, desiredRange, 20f);
+                        moving = !unit.within(moveTile, desiredRange);
+                    }
                 }
             } else {
                 unit.plans.removeFirst();
